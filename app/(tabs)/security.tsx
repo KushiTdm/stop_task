@@ -23,28 +23,11 @@ import {
   Lock,
   Radio,
 } from 'lucide-react-native';
-import { mockApps } from '@/utils/mockData';
-
-// Apps considered "system" — excluded from suspicious tracking
-const SYSTEM_PACKAGE_PREFIXES = [
-  'com.android.',
-  'com.google.android.gms',
-  'com.google.android.gsf',
-  'com.google.android.providers',
-  'com.google.android.permissioncontroller',
-  'com.google.android.networkstack',
-  'android.',
-  'com.samsung.android.',
-  'com.miui.',
-  'com.huawei.systemmanager',
-  'com.sec.',
-];
-
-const isSystemApp = (packageName: string) =>
-  SYSTEM_PACKAGE_PREFIXES.some((prefix) => packageName.startsWith(prefix));
+import { useAppMonitor } from '@/modules/useAppMonitor';
+import { RealAppInfo } from '@/modules/AppMonitorAPI';
 
 interface SensorAccess {
-  sensor: 'camera' | 'microphone' | 'location' | 'network' | 'bluetooth';
+  sensor: string;
   label: string;
   icon: any;
   color: string;
@@ -54,14 +37,10 @@ interface SensorAccess {
 }
 
 export default function SecurityCheck() {
+  const { apps, loading, refresh, killApp } = useAppMonitor(0);
+  const [killedPackages, setKilledPackages] = useState<string[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [killedApps, setKilledApps] = useState<string[]>([]);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const scanAnim = useRef(new Animated.Value(0)).current;
-
-  const userApps = mockApps.filter((app) => !isSystemApp(app.packageName));
-  const suspiciousApps = userApps.filter((app) => app.isSuspicious && !killedApps.includes(app.id));
-  const runningUserApps = userApps.filter((app) => app.isRunning && !killedApps.includes(app.id));
 
   useEffect(() => {
     const pulse = Animated.loop(
@@ -74,88 +53,33 @@ export default function SecurityCheck() {
     return () => pulse.stop();
   }, []);
 
-  const sensorAccesses: SensorAccess[] = [
-    {
-      sensor: 'location',
-      label: 'GPS / Localisation',
-      icon: MapPin,
-      color: '#ff4444',
-      apps: runningUserApps
-        .filter((a) => a.permissions.includes('Localisation'))
-        .map((a) => a.name),
-      isActive: runningUserApps.some((a) => a.permissions.includes('Localisation')),
-      risk: 'critical',
-    },
-    {
-      sensor: 'microphone',
-      label: 'Microphone',
-      icon: Mic,
-      color: '#ff8c00',
-      apps: runningUserApps
-        .filter((a) => a.permissions.includes('Microphone'))
-        .map((a) => a.name),
-      isActive: runningUserApps.some((a) => a.permissions.includes('Microphone')),
-      risk: 'critical',
-    },
-    {
-      sensor: 'camera',
-      label: 'Caméra',
-      icon: Camera,
-      color: '#ff8c00',
-      apps: runningUserApps
-        .filter((a) => a.permissions.includes('Caméra'))
-        .map((a) => a.name),
-      isActive: runningUserApps.some((a) => a.permissions.includes('Caméra')),
-      risk: 'high',
-    },
-    {
-      sensor: 'network',
-      label: 'Réseau / Internet',
-      icon: Wifi,
-      color: '#00c896',
-      apps: runningUserApps
-        .filter((a) => a.permissions.includes('Internet'))
-        .map((a) => a.name),
-      isActive: runningUserApps.some((a) => a.permissions.includes('Internet')),
-      risk: 'medium',
-    },
-    {
-      sensor: 'bluetooth',
-      label: 'Contacts & Téléphone',
-      icon: Radio,
-      color: '#a855f7',
-      apps: runningUserApps
-        .filter((a) => a.permissions.includes('Contacts') || a.permissions.includes('Téléphone'))
-        .map((a) => a.name),
-      isActive: runningUserApps.some(
-        (a) => a.permissions.includes('Contacts') || a.permissions.includes('Téléphone')
-      ),
-      risk: 'high',
-    },
-  ];
-
-  const handleScan = () => {
+  const handleScan = async () => {
     setScanning(true);
-    Animated.timing(scanAnim, {
-      toValue: 1,
-      duration: 2000,
-      useNativeDriver: false,
-    }).start(() => {
-      scanAnim.setValue(0);
-      setScanning(false);
-    });
+    await refresh();
+    setScanning(false);
   };
 
-  const handleKillApp = (appId: string, appName: string) => {
+  // Apps réelles filtrées
+  const suspiciousApps = apps.filter(
+    (a) => a.isSuspicious && !killedPackages.includes(a.packageName)
+  );
+  const runningApps = apps.filter(
+    (a) => a.isRunning && !killedPackages.includes(a.packageName)
+  );
+
+  const handleKillApp = (app: RealAppInfo) => {
     Alert.alert(
       'Terminer le processus',
-      `Voulez-vous forcer l'arrêt de ${appName} ?`,
+      `Forcer l'arrêt de ${app.name} ?`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
           text: 'Arrêter',
           style: 'destructive',
-          onPress: () => setKilledApps((prev) => [...prev, appId]),
+          onPress: async () => {
+            await killApp(app.packageName);
+            setKilledPackages((prev) => [...prev, app.packageName]);
+          },
         },
       ]
     );
@@ -170,19 +94,94 @@ export default function SecurityCheck() {
         {
           text: 'Tout arrêter',
           style: 'destructive',
-          onPress: () =>
-            setKilledApps((prev) => [...prev, ...suspiciousApps.map((a) => a.id)]),
+          onPress: async () => {
+            for (const app of suspiciousApps) {
+              await killApp(app.packageName);
+            }
+            setKilledPackages((prev) => [
+              ...prev,
+              ...suspiciousApps.map((a) => a.packageName),
+            ]);
+          },
         },
       ]
     );
   };
+
+  // Détection des accès capteurs basée sur les vraies permissions
+  const sensorAccesses: SensorAccess[] = [
+    {
+      sensor: 'location',
+      label: 'GPS / Localisation',
+      icon: MapPin,
+      color: '#ff4444',
+      apps: runningApps
+        .filter((a) => a.permissions.some((p) => p.includes('LOCATION')))
+        .map((a) => a.name),
+      isActive: runningApps.some((a) => a.permissions.some((p) => p.includes('LOCATION'))),
+      risk: 'critical',
+    },
+    {
+      sensor: 'microphone',
+      label: 'Microphone',
+      icon: Mic,
+      color: '#ff8c00',
+      apps: runningApps
+        .filter((a) => a.permissions.includes('RECORD_AUDIO'))
+        .map((a) => a.name),
+      isActive: runningApps.some((a) => a.permissions.includes('RECORD_AUDIO')),
+      risk: 'critical',
+    },
+    {
+      sensor: 'camera',
+      label: 'Caméra',
+      icon: Camera,
+      color: '#ff8c00',
+      apps: runningApps
+        .filter((a) => a.permissions.includes('CAMERA'))
+        .map((a) => a.name),
+      isActive: runningApps.some((a) => a.permissions.includes('CAMERA')),
+      risk: 'high',
+    },
+    {
+      sensor: 'network',
+      label: 'Réseau / Internet',
+      icon: Wifi,
+      color: '#00c896',
+      apps: runningApps
+        .filter((a) => a.permissions.includes('INTERNET'))
+        .map((a) => a.name),
+      isActive: runningApps.some((a) => a.permissions.includes('INTERNET')),
+      risk: 'medium',
+    },
+    {
+      sensor: 'contacts',
+      label: 'Contacts & Téléphone',
+      icon: Radio,
+      color: '#a855f7',
+      apps: runningApps
+        .filter((a) =>
+          a.permissions.includes('READ_CONTACTS') ||
+          a.permissions.includes('READ_PHONE_STATE')
+        )
+        .map((a) => a.name),
+      isActive: runningApps.some(
+        (a) =>
+          a.permissions.includes('READ_CONTACTS') ||
+          a.permissions.includes('READ_PHONE_STATE')
+      ),
+      risk: 'high',
+    },
+  ];
 
   const criticalCount = sensorAccesses.filter(
     (s) => s.isActive && s.risk === 'critical'
   ).length;
 
   const threatLevel =
-    criticalCount >= 2 ? 'CRITIQUE' : criticalCount === 1 ? 'ÉLEVÉ' : suspiciousApps.length > 0 ? 'MODÉRÉ' : 'FAIBLE';
+    criticalCount >= 2 ? 'CRITIQUE' :
+    criticalCount === 1 ? 'ÉLEVÉ' :
+    suspiciousApps.length > 0 ? 'MODÉRÉ' : 'FAIBLE';
 
   const threatColor =
     threatLevel === 'CRITIQUE' ? '#ff2d2d' :
@@ -191,41 +190,53 @@ export default function SecurityCheck() {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>SURVEILLANCE</Text>
-          <Text style={styles.subtitle}>Activités en arrière-plan</Text>
+          <Text style={styles.subtitle}>
+            {loading ? 'Chargement...' : `${apps.length} apps analysées • Données réelles`}
+          </Text>
         </View>
         <View style={[styles.threatBadge, { borderColor: threatColor }]}>
-          <Animated.View style={[styles.threatDot, { backgroundColor: threatColor, transform: [{ scale: pulseAnim }] }]} />
+          <Animated.View
+            style={[
+              styles.threatDot,
+              { backgroundColor: threatColor, transform: [{ scale: pulseAnim }] },
+            ]}
+          />
           <Text style={[styles.threatText, { color: threatColor }]}>{threatLevel}</Text>
         </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
 
-        {/* Threat Overview */}
+        {/* Stats */}
         <View style={styles.overviewCard}>
           <View style={styles.overviewRow}>
             <View style={styles.overviewStat}>
-              <Text style={[styles.overviewNumber, { color: '#ff4444' }]}>{suspiciousApps.length}</Text>
+              <Text style={[styles.overviewNumber, { color: '#ff4444' }]}>
+                {suspiciousApps.length}
+              </Text>
               <Text style={styles.overviewLabel}>Suspectes</Text>
             </View>
             <View style={styles.overviewDivider} />
             <View style={styles.overviewStat}>
-              <Text style={[styles.overviewNumber, { color: '#ff8c00' }]}>{runningUserApps.length}</Text>
+              <Text style={[styles.overviewNumber, { color: '#ff8c00' }]}>
+                {runningApps.length}
+              </Text>
               <Text style={styles.overviewLabel}>En cours</Text>
             </View>
             <View style={styles.overviewDivider} />
             <View style={styles.overviewStat}>
-              <Text style={[styles.overviewNumber, { color: '#00c896' }]}>{killedApps.length}</Text>
+              <Text style={[styles.overviewNumber, { color: '#00c896' }]}>
+                {killedPackages.length}
+              </Text>
               <Text style={styles.overviewLabel}>Stoppées</Text>
             </View>
           </View>
         </View>
 
-        {/* Scan Button */}
+        {/* Scan */}
         <TouchableOpacity
           style={[styles.scanButton, scanning && styles.scanButtonActive]}
           onPress={handleScan}
@@ -242,9 +253,7 @@ export default function SecurityCheck() {
             <Eye size={16} color="#888" />
             <Text style={styles.sectionTitle}>ACCÈS AUX CAPTEURS</Text>
           </View>
-          <Text style={styles.sectionNote}>
-            Apps utilisateurs uniquement — processus système exclus
-          </Text>
+          <Text style={styles.sectionNote}>Basé sur les permissions réelles des apps actives</Text>
 
           {sensorAccesses.map((sensor, index) => (
             <View
@@ -261,12 +270,16 @@ export default function SecurityCheck() {
                   <Text style={[styles.sensorName, sensor.isActive && { color: '#f0f0f0' }]}>
                     {sensor.label}
                   </Text>
-                  <Text style={styles.sensorApps}>
-                    {sensor.apps.length > 0 ? sensor.apps.join(', ') : 'Aucune app active'}
+                  <Text style={styles.sensorApps} numberOfLines={1}>
+                    {sensor.apps.length > 0 ? sensor.apps.slice(0, 3).join(', ') : 'Aucune app active'}
                   </Text>
                 </View>
               </View>
-              <View style={[styles.sensorStatus, { backgroundColor: sensor.isActive ? sensor.color : '#2a2a2a' }]}>
+              <View
+                style={[
+                  styles.sensorStatus,
+                  { backgroundColor: sensor.isActive ? sensor.color : '#2a2a2a' },
+                ]}>
                 <View style={styles.statusDot} />
               </View>
             </View>
@@ -277,28 +290,38 @@ export default function SecurityCheck() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <AlertTriangle size={16} color="#ff4444" />
-            <Text style={[styles.sectionTitle, { color: '#ff4444' }]}>APPLICATIONS SUSPECTES</Text>
+            <Text style={[styles.sectionTitle, { color: '#ff4444' }]}>
+              APPLICATIONS SUSPECTES
+            </Text>
           </View>
 
           {suspiciousApps.length === 0 ? (
             <View style={styles.emptyState}>
               <Lock size={32} color="#00c896" />
-              <Text style={styles.emptyText}>Aucune menace détectée</Text>
+              <Text style={styles.emptyText}>
+                {loading ? 'Analyse en cours...' : 'Aucune menace détectée'}
+              </Text>
             </View>
           ) : (
             <>
               <TouchableOpacity style={styles.killAllButton} onPress={handleKillAll}>
                 <Zap size={16} color="#ff4444" />
-                <Text style={styles.killAllText}>Tout arrêter ({suspiciousApps.length})</Text>
+                <Text style={styles.killAllText}>
+                  Tout arrêter ({suspiciousApps.length})
+                </Text>
               </TouchableOpacity>
 
               {suspiciousApps.map((app) => (
-                <View key={app.id} style={styles.suspiciousCard}>
+                <View key={app.packageName} style={styles.suspiciousCard}>
                   <TouchableOpacity
                     style={styles.suspiciousMain}
-                    onPress={() => router.push(`/app/${app.id}`)}>
+                    onPress={() =>
+                      router.push(`/app/${encodeURIComponent(app.packageName)}`)
+                    }>
                     <View style={styles.suspiciousIcon}>
-                      <Text style={styles.suspiciousIconText}>{app.icon}</Text>
+                      <Text style={styles.suspiciousIconText}>
+                        {app.name.charAt(0).toUpperCase()}
+                      </Text>
                     </View>
                     <View style={styles.suspiciousInfo}>
                       <View style={styles.suspiciousNameRow}>
@@ -310,10 +333,16 @@ export default function SecurityCheck() {
                           </View>
                         )}
                       </View>
-                      <Text style={styles.suspiciousPackage}>{app.packageName}</Text>
+                      <Text style={styles.suspiciousPackage} numberOfLines={1}>
+                        {app.packageName}
+                      </Text>
                       <View style={styles.permissionPills}>
                         {app.permissions
-                          .filter((p) => ['Localisation', 'Microphone', 'Caméra', 'Contacts', 'Téléphone'].includes(p))
+                          .filter((p) =>
+                            ['ACCESS_FINE_LOCATION', 'RECORD_AUDIO', 'CAMERA',
+                             'READ_CONTACTS', 'READ_PHONE_STATE', 'READ_SMS'].includes(p)
+                          )
+                          .slice(0, 4)
                           .map((perm, i) => (
                             <View key={i} style={styles.permPill}>
                               <Text style={styles.permPillText}>{perm}</Text>
@@ -326,7 +355,7 @@ export default function SecurityCheck() {
                   {app.isRunning && (
                     <TouchableOpacity
                       style={styles.killButton}
-                      onPress={() => handleKillApp(app.id, app.name)}>
+                      onPress={() => handleKillApp(app)}>
                       <X size={16} color="#fff" />
                       <Text style={styles.killButtonText}>Stop</Text>
                     </TouchableOpacity>
@@ -337,31 +366,40 @@ export default function SecurityCheck() {
           )}
         </View>
 
-        {/* All Running User Apps */}
+        {/* Running Apps */}
         <View style={[styles.section, { marginBottom: 40 }]}>
           <View style={styles.sectionHeader}>
             <Radio size={16} color="#888" />
             <Text style={styles.sectionTitle}>PROCESSUS EN ARRIÈRE-PLAN</Text>
           </View>
-          <Text style={styles.sectionNote}>
-            Toutes les apps utilisateur actives (hors système)
-          </Text>
+          <Text style={styles.sectionNote}>Apps actives avec consommation réelle</Text>
 
-          {runningUserApps.length === 0 ? (
+          {runningApps.length === 0 ? (
             <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>Aucun processus actif</Text>
+              <Text style={styles.emptyText}>
+                {loading ? 'Chargement...' : 'Aucun processus actif'}
+              </Text>
             </View>
           ) : (
-            runningUserApps.map((app) => (
+            runningApps.map((app) => (
               <TouchableOpacity
-                key={app.id}
+                key={app.packageName}
                 style={styles.processRow}
-                onPress={() => router.push(`/app/${app.id}`)}>
-                <Text style={styles.processIcon}>{app.icon}</Text>
+                onPress={() =>
+                  router.push(`/app/${encodeURIComponent(app.packageName)}`)
+                }>
+                <View style={styles.processIconWrap}>
+                  <Text style={styles.processIconText}>
+                    {app.name.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
                 <View style={styles.processInfo}>
                   <Text style={styles.processName}>{app.name}</Text>
                   <Text style={styles.processData}>
-                    RAM: {app.ramUsage}MB · Data: {(app.dataUsage / 1024).toFixed(1)}GB
+                    RAM: {app.ramUsage.toFixed(0)} MB · Data:{' '}
+                    {app.dataUsage > 1024
+                      ? `${(app.dataUsage / 1024).toFixed(1)} GB`
+                      : `${app.dataUsage.toFixed(0)} MB`}
                   </Text>
                 </View>
                 {app.isSuspicious && <AlertTriangle size={16} color="#ff4444" />}
@@ -390,12 +428,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1e1e1e',
   },
   headerLeft: {},
-  title: {
-    fontSize: 26,
-    fontWeight: '900',
-    color: '#f0f0f0',
-    letterSpacing: 3,
-  },
+  title: { fontSize: 26, fontWeight: '900', color: '#f0f0f0', letterSpacing: 3 },
   subtitle: { fontSize: 12, color: '#555', marginTop: 2, letterSpacing: 1 },
 
   threatBadge: {
@@ -445,7 +478,12 @@ const styles = StyleSheet.create({
   scanButtonTextActive: { color: '#0a0a0a' },
 
   section: { paddingHorizontal: 20, paddingTop: 28 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
   sectionTitle: {
     fontSize: 11,
     fontWeight: '800',
@@ -467,22 +505,15 @@ const styles = StyleSheet.create({
   },
   sensorLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   sensorIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
+    width: 40, height: 40, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center', marginRight: 12,
   },
   sensorInfo: { flex: 1 },
   sensorName: { fontSize: 14, fontWeight: '600', color: '#555', marginBottom: 2 },
   sensorApps: { fontSize: 11, color: '#3a3a3a' },
   sensorStatus: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 28, height: 28, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center',
   },
   statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },
 
@@ -512,17 +543,15 @@ const styles = StyleSheet.create({
   },
   suspiciousMain: { flexDirection: 'row', padding: 14, alignItems: 'flex-start' },
   suspiciousIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
+    width: 44, height: 44, borderRadius: 10,
     backgroundColor: '#1a0a0a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
+    alignItems: 'center', justifyContent: 'center', marginRight: 12,
   },
-  suspiciousIconText: { fontSize: 22 },
+  suspiciousIconText: { fontSize: 20, fontWeight: '700', color: '#ff4444' },
   suspiciousInfo: { flex: 1 },
-  suspiciousNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  suspiciousNameRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2,
+  },
   suspiciousName: { fontSize: 15, fontWeight: '700', color: '#f0f0f0' },
   suspiciousPackage: { fontSize: 11, color: '#444', marginBottom: 8 },
   runningPill: {
@@ -566,7 +595,12 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     gap: 12,
   },
-  processIcon: { fontSize: 22, width: 32, textAlign: 'center' },
+  processIconWrap: {
+    width: 36, height: 36, borderRadius: 8,
+    backgroundColor: '#1a1a1a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  processIconText: { fontSize: 16, fontWeight: '700', color: '#888' },
   processInfo: { flex: 1 },
   processName: { fontSize: 14, fontWeight: '600', color: '#ccc' },
   processData: { fontSize: 11, color: '#444', marginTop: 2 },
