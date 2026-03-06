@@ -73,6 +73,27 @@ export const AppMonitorAPI = {
   },
 
   /**
+   * Tue tous les processus non-système pour libérer la RAM.
+   * Retourne la liste des packages tués.
+   */
+  killAllNonSystemApps(): Promise<string[]> {
+    assertAndroid();
+    return NativeAppMonitor.killAllNonSystemApps();
+  },
+
+  /** Démarre le service de surveillance en arrière-plan. */
+  startBackgroundService(): Promise<boolean> {
+    assertAndroid();
+    return NativeAppMonitor.startBackgroundService();
+  },
+
+  /** Arrête le service de surveillance en arrière-plan. */
+  stopBackgroundService(): Promise<boolean> {
+    assertAndroid();
+    return NativeAppMonitor.stopBackgroundService();
+  },
+
+  /**
    * Kills background process. Requires KILL_BACKGROUND_PROCESSES permission.
    */
   killApp(packageName: string): Promise<boolean> {

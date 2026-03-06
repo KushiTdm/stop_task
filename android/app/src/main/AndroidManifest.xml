@@ -14,6 +14,8 @@
   <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES"/>
   <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
       tools:ignore="ProtectedPermissions"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
   <queries>
     <intent>
@@ -35,6 +37,12 @@
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
+
+    <!-- Service de surveillance en arrière-plan -->
+    <service
+        android:name=".AppMonitorService"
+        android:foregroundServiceType="dataSync"
+        android:exported="false"/>
 
     <activity
         android:name=".MainActivity"

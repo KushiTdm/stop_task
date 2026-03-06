@@ -11,8 +11,9 @@ import {
   Alert,
 } from 'react-native';
 import { router } from 'expo-router';
-import { Search, Cpu, Wifi, X, TriangleAlert as AlertTriangle, RefreshCw } from 'lucide-react-native';
+import { Search, Cpu, Wifi, X, TriangleAlert as AlertTriangle, Zap } from 'lucide-react-native';
 import { useAppMonitor } from '@/modules/useAppMonitor';
+import AppMonitorAPI from '@/modules/AppMonitorAPI';
 
 export default function AppsMonitor() {
   const {
@@ -46,6 +47,29 @@ export default function AppsMonitor() {
     setRefreshing(true);
     await refresh();
     setRefreshing(false);
+  };
+
+  const handleKillAll = () => {
+    Alert.alert(
+      'Libérer la RAM',
+      'Arrêter toutes les applications non-système ? Cela libérera de la mémoire.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Libérer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const killed = await AppMonitorAPI.killAllNonSystemApps();
+              await refresh();
+              Alert.alert('RAM libérée', `${killed.length} application(s) arrêtée(s).`);
+            } catch (e: any) {
+              Alert.alert('Erreur', e.message);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleKill = (packageName: string, name: string) => {
@@ -91,10 +115,16 @@ export default function AppsMonitor() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Gestionnaire d'Apps</Text>
-        <Text style={styles.subtitle}>
-          {loading ? 'Chargement...' : `${apps.length} applications • Données réelles`}
-        </Text>
+        <View>
+          <Text style={styles.title}>Gestionnaire d'Apps</Text>
+          <Text style={styles.subtitle}>
+            {loading ? 'Chargement...' : `${apps.length} applications • Données réelles`}
+          </Text>
+        </View>
+        <TouchableOpacity style={styles.killAllBtn} onPress={handleKillAll}>
+          <Zap size={16} color="#fff" />
+          <Text style={styles.killAllBtnText}>Libérer RAM</Text>
+        </TouchableOpacity>
       </View>
 
       {/* System stats */}
@@ -252,9 +282,22 @@ export default function AppsMonitor() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20, paddingTop: 60, paddingBottom: 20,
     backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e5e7eb',
   },
+  killAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    gap: 5,
+  },
+  killAllBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   title: { fontSize: 28, fontWeight: '700', color: '#111827', marginBottom: 4 },
   subtitle: { fontSize: 14, color: '#6b7280' },
   statsContainer: {
